@@ -109,6 +109,10 @@ function fetchHttpWithHost(ip, port, path = '/', hostHeader = ip) {
 }
 
 function fetchHttps(ip, port, path = '/') {
+  return fetchHttpsWithHost(ip, port, path, ip, ip);
+}
+
+function fetchHttpsWithHost(ip, port, path = '/', hostHeader = ip, sni = hostHeader) {
   return new Promise(resolve => {
     const done = safeDoneFactory(resolve);
     const req = https.request(
@@ -119,8 +123,8 @@ function fetchHttps(ip, port, path = '/') {
         method: 'GET',
         timeout: SCAN_TIMEOUT_MS,
         rejectUnauthorized: false,
-        servername: ip,
-        headers: { Host: ip, 'User-Agent': 'tw-ct-scanner/1.0' }
+        servername: sni,
+        headers: { Host: hostHeader, 'User-Agent': 'tw-ct-scanner/1.0' }
       },
       res => {
         let body = '';
@@ -132,6 +136,8 @@ function fetchHttps(ip, port, path = '/') {
             ip,
             port,
             path,
+            host_header: hostHeader,
+            sni,
             protocol: 'https',
             code: res.statusCode,
             server: res.headers.server || '',
@@ -144,21 +150,21 @@ function fetchHttps(ip, port, path = '/') {
     );
     req.on('timeout', () => {
       req.destroy();
-      done({ ip, port, path, protocol: 'https', error: 'timeout' });
+      done({ ip, port, path, host_header: hostHeader, sni, protocol: 'https', error: 'timeout' });
     });
-    req.on('error', err => done({ ip, port, path, protocol: 'https', error: err.message }));
+    req.on('error', err => done({ ip, port, path, host_header: hostHeader, sni, protocol: 'https', error: err.message }));
     req.end();
   });
 }
 
-function tlsProbe(ip, port = 443) {
+function tlsProbe(ip, port = 443, sni = ip) {
   return new Promise(resolve => {
     const done = safeDoneFactory(resolve);
     const sock = tls.connect(
       {
         host: ip,
         port,
-        servername: ip,
+        servername: sni,
         rejectUnauthorized: false,
         timeout: SCAN_TIMEOUT_MS
       },
@@ -169,6 +175,7 @@ function tlsProbe(ip, port = 443) {
           ip,
           port,
           protocol: 'tls',
+          sni,
           subject_cn: cert.subject && cert.subject.CN ? cert.subject.CN : '',
           issuer_cn: cert.issuer && cert.issuer.CN ? cert.issuer.CN : '',
           san: cert.subjectaltname || '',
@@ -179,9 +186,9 @@ function tlsProbe(ip, port = 443) {
     );
     sock.on('timeout', () => {
       sock.destroy();
-      done({ ip, port, protocol: 'tls', error: 'timeout' });
+      done({ ip, port, protocol: 'tls', sni, error: 'timeout' });
     });
-    sock.on('error', err => done({ ip, port, protocol: 'tls', error: err.message }));
+    sock.on('error', err => done({ ip, port, protocol: 'tls', sni, error: err.message }));
   });
 }
 
@@ -226,6 +233,10 @@ async function runScanner() {
         if (!selfIps.includes(ip) && port === 443) {
           results.probes.push(await fetchHttps(ip, 443, '/'));
           results.probes.push(await tlsProbe(ip, 443));
+          for (const hostHeader of hostOverrides) {
+            results.probes.push(await fetchHttpsWithHost(ip, 443, '/proof', hostHeader, hostHeader));
+            results.probes.push(await tlsProbe(ip, 443, hostHeader));
+          }
         }
       }
       await sleep(SCAN_DELAY_MS);
