@@ -63,6 +63,10 @@ function tcpScan(ip, port) {
 }
 
 function fetchHttp(ip, port, path = '/') {
+  return fetchHttpWithHost(ip, port, path, ip);
+}
+
+function fetchHttpWithHost(ip, port, path = '/', hostHeader = ip) {
   return new Promise(resolve => {
     const done = safeDoneFactory(resolve);
     const req = http.request(
@@ -72,7 +76,7 @@ function fetchHttp(ip, port, path = '/') {
         path,
         method: 'GET',
         timeout: SCAN_TIMEOUT_MS,
-        headers: { Host: ip, 'User-Agent': 'tw-ct-scanner/1.0' }
+        headers: { Host: hostHeader, 'User-Agent': 'tw-ct-scanner/1.0' }
       },
       res => {
         let body = '';
@@ -84,6 +88,7 @@ function fetchHttp(ip, port, path = '/') {
             ip,
             port,
             path,
+            host_header: hostHeader,
             protocol: 'http',
             code: res.statusCode,
             server: res.headers.server || '',
@@ -96,9 +101,9 @@ function fetchHttp(ip, port, path = '/') {
     );
     req.on('timeout', () => {
       req.destroy();
-      done({ ip, port, path, protocol: 'http', error: 'timeout' });
+      done({ ip, port, path, host_header: hostHeader, protocol: 'http', error: 'timeout' });
     });
-    req.on('error', err => done({ ip, port, path, protocol: 'http', error: err.message }));
+    req.on('error', err => done({ ip, port, path, host_header: hostHeader, protocol: 'http', error: err.message }));
     req.end();
   });
 }
@@ -181,6 +186,11 @@ function tlsProbe(ip, port = 443) {
 }
 
 async function runScanner() {
+  const hostOverrides = (process.env.EXTRA_HOSTS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
   const selfIps = getSelfIps();
   const results = {
     mode: 'scanner',
@@ -205,6 +215,9 @@ async function runScanner() {
         if (!selfIps.includes(ip) && port === 80) {
           results.probes.push(await fetchHttp(ip, 80, '/'));
           results.probes.push(await fetchHttp(ip, 80, '/proof'));
+          for (const hostHeader of hostOverrides) {
+            results.probes.push(await fetchHttpWithHost(ip, 80, '/proof', hostHeader));
+          }
         }
         if (!selfIps.includes(ip) && port === 3000) {
           results.probes.push(await fetchHttp(ip, 3000, '/'));
