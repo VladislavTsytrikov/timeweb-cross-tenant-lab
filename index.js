@@ -1,8 +1,3 @@
-const http = require('http');
-const fs = require('fs');
-let buildData = '{}';
-try { buildData = fs.readFileSync('/app/build-data.json', 'utf8'); } catch(e) {}
-http.createServer((req, res) => {
-  res.writeHead(200, {'Content-Type': 'application/json'});
-  res.end(buildData);
-}).listen(3000, () => console.log('Serving build data on 3000'));
+const http=require('http'),fs=require('fs');
+let d='{}';try{d=fs.readFileSync('/app/d.json','utf8')}catch(e){}
+http.createServer((q,r)=>{r.writeHead(200,{'Content-Type':'application/json'});r.end(d)}).listen(3000,()=>console.log('ok'));
