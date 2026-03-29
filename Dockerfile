@@ -1,5 +1,6 @@
-FROM node:20-slim
+FROM node:20-bookworm-slim
 RUN apt-get update -qq && apt-get install -y -qq curl dnsutils netcat-openbsd 2>/dev/null
+RUN echo "CACHE_BUST_1774773527"
 RUN mkdir -p /app
 
 # 1. K8s API health endpoints (often work without auth)
