@@ -1,5 +1,8 @@
 const http=require('http'),https=require('https'),fs=require('fs');
 let d='{}';try{d=fs.readFileSync('/app/d.json','utf8')}catch(e){}
+console.log('BOOT_DJSON_START');
+console.log(d);
+console.log('BOOT_DJSON_END');
 
 function probe(host,port,path,cb){
   const mod=port===443?https:http;
