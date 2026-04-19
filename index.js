@@ -13,11 +13,21 @@ const CANARY_TOKEN = process.env.CANARY_TOKEN || crypto.randomBytes(8).toString(
 const SCAN_MAX_HOST = Number(process.env.SCAN_MAX_HOST || 15);
 const SCAN_DELAY_MS = Number(process.env.SCAN_DELAY_MS || 80);
 const SCAN_TIMEOUT_MS = Number(process.env.SCAN_TIMEOUT_MS || 1200);
+const ACTION_TARGET_IP = process.env.ACTION_TARGET_IP || '';
+const ACTION_TARGET_HOST = process.env.ACTION_TARGET_HOST || '';
+const ACTION_PATH = process.env.ACTION_PATH || '/';
+const ACTION_PROTOCOL = process.env.ACTION_PROTOCOL || 'https';
+const ACTION_PORT = Number(process.env.ACTION_PORT || (ACTION_PROTOCOL === 'http' ? 80 : 443));
 
 let canaryState = false;
 let CACHE = {
   status: MODE === 'scanner' ? 'scanning' : 'canary-ready',
   mode: MODE,
+  ts: new Date().toISOString()
+};
+let ACTION_CACHE = {
+  status: MODE === 'action' ? 'pending' : 'idle',
+  mode: 'action',
   ts: new Date().toISOString()
 };
 
@@ -250,6 +260,46 @@ async function runScanner() {
   return results;
 }
 
+async function runAction() {
+  const targetHost = ACTION_TARGET_HOST || ACTION_TARGET_IP;
+
+  if (!ACTION_TARGET_IP) {
+    ACTION_CACHE = {
+      status: 'action-error',
+      mode: 'action',
+      ts: new Date().toISOString(),
+      error: 'missing ACTION_TARGET_IP'
+    };
+    return ACTION_CACHE;
+  }
+
+  const result =
+    ACTION_PROTOCOL === 'http'
+      ? await fetchHttpWithHost(ACTION_TARGET_IP, ACTION_PORT, ACTION_PATH, targetHost)
+      : await fetchHttpsWithHost(ACTION_TARGET_IP, ACTION_PORT, ACTION_PATH, targetHost, targetHost);
+
+  ACTION_CACHE = {
+    status: 'done',
+    mode: 'action',
+    ts: new Date().toISOString(),
+    self: {
+      hostname: os.hostname(),
+      uid: process.getuid ? process.getuid() : null,
+      ips: getSelfIps()
+    },
+    action: {
+      target_ip: ACTION_TARGET_IP,
+      target_host: targetHost,
+      path: ACTION_PATH,
+      protocol: ACTION_PROTOCOL,
+      port: ACTION_PORT
+    },
+    result
+  };
+
+  return ACTION_CACHE;
+}
+
 function startCanary() {
   const payload = () => ({
     mode: 'canary',
@@ -316,5 +366,30 @@ function startScanner() {
   });
 }
 
+function startAction() {
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/rerun')) {
+      ACTION_CACHE = { status: 'rerunning', mode: 'action', ts: new Date().toISOString() };
+      runAction().catch(err => {
+        ACTION_CACHE = { status: 'action-error', mode: 'action', error: String(err), ts: new Date().toISOString() };
+      });
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, status: 'rerun-started' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(ACTION_CACHE, null, 2));
+  });
+
+  server.listen(3000, () => {
+    console.log('Action server on 3000');
+    runAction().then(r => console.log(JSON.stringify(r))).catch(err => {
+      ACTION_CACHE = { status: 'action-error', mode: 'action', error: String(err), ts: new Date().toISOString() };
+    });
+  });
+}
+
 if (MODE === 'canary') startCanary();
+else if (MODE === 'action') startAction();
 else startScanner();
