@@ -50,4 +50,3 @@ if (mountLine) {
 
 result.control = probeDevice('control', 511, 511);
 fs.writeFileSync('/app/d.json', `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
-process.stdout.write(`${JSON.stringify(result)}\n`);
