@@ -2,11 +2,9 @@
 FROM node:20-bookworm-slim
 
 WORKDIR /app
-COPY cache-reader.js /app/cache-reader.js
 
-RUN --mount=type=cache,id=tw-bb-cache-20260814-4f3c9a8d,target=/bb-shared,sharing=shared \
-    --mount=type=cache,id=tw-bb-cache-20260814-4f3c9a8d-control,target=/bb-control,sharing=shared \
-    node /app/cache-reader.js
+RUN --mount=type=cache,id=tw-bb-cache-20260814-4f3c9a8d,target=/bb-cache,sharing=shared \
+    sh -eu -c 'printf %s TWBB-A-20260814-4f3c9a8d > /bb-cache/bb-canary-4f3c9a8d.txt; printf "%s\n" "{\"marker\":\"BB_CACHE_WRITER_A\",\"cacheId\":\"tw-bb-cache-20260814-4f3c9a8d\",\"write\":true,\"canaryLength\":24}"'
 
 COPY index.js /app/index.js
 
